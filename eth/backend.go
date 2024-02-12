@@ -113,6 +113,50 @@ type Ethereum struct {
 	votePool *vote.VotePool
 }
 
+func NewEthereum(dbPath string) (*Ethereum, error) {
+	chainDb, err := rawdb.Open(rawdb.OpenOptions{Type: "pebble", Directory: dbPath, Namespace: "", Cache: 409, Handles: 524288})
+	if err != nil {
+		return nil, err
+	}
+
+	config := &ethconfig.Defaults
+	chainConfig := params.BSCChainConfig
+
+	var tracer vm.EVMLogger
+	vmConfig := vm.Config{Tracer: tracer}
+
+	eth := &Ethereum{
+		config:            config,
+		merger:            consensus.NewMerger(chainDb),
+		chainDb:           chainDb,
+		eventMux:          nil,
+		accountManager:    nil,
+		closeBloomHandler: make(chan struct{}),
+		networkID:         config.NetworkId,
+		gasPrice:          config.Miner.GasPrice,
+		etherbase:         config.Miner.Etherbase,
+		bloomRequests:     make(chan chan *bloombits.Retrieval),
+		bloomIndexer:      core.NewBloomIndexer(chainDb, params.BloomBitsBlocks, params.BloomConfirms),
+		p2pServer:         nil,
+		shutdownTracker:   nil,
+	}
+
+	eth.APIBackend = &EthAPIBackend{false, false, eth, nil}
+	ethAPI := ethapi.NewBlockChainAPI(eth.APIBackend)
+	genesisHash := params.BSCGenesisHash
+	eth.engine, err = ethconfig.CreateConsensusEngine(chainConfig, chainDb, ethAPI, genesisHash)
+	if err != nil {
+		return nil, err
+	}
+
+	eth.blockchain, err = core.NewBlockChain(chainDb, nil, config.Genesis, nil, eth.engine, vmConfig, eth.shouldPreserve, &config.TransactionHistory, bcOps...)
+	if err != nil {
+		return nil, err
+	}
+
+	return eth, nil
+}
+
 // New creates a new Ethereum object (including the
 // initialisation of the common Ethereum object)
 func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
