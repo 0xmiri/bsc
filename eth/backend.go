@@ -149,6 +149,7 @@ func NewEthereum(dbPath string) (*Ethereum, error) {
 		return nil, err
 	}
 
+	bcOps := make([]core.BlockChainOption, 0)
 	eth.blockchain, err = core.NewBlockChain(chainDb, nil, config.Genesis, nil, eth.engine, vmConfig, eth.shouldPreserve, &config.TransactionHistory, bcOps...)
 	if err != nil {
 		return nil, err
