@@ -51,6 +51,149 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 	}
 }
 
+type MethSimulation struct {
+	header          *types.Header
+	block           *types.Block
+	blockHash       common.Hash
+	blockNumber     *big.Int
+	gasPool         *GasPool
+	evm             *vm.EVM
+	signer          types.Signer
+	posa            consensus.PoSA
+	isPoSA          bool
+	bloomProcessors *AsyncReceiptBloomGenerator
+	systemTxs       []*types.Transaction
+	commonTxs       []*types.Transaction
+	receipts        []*types.Receipt
+	usedGas         *uint64
+}
+
+func (p *StateProcessor) PrepareEnv(block *types.Block, statedb *state.StateDB, cfg vm.Config) *MethSimulation {
+	var (
+		header      = block.Header()
+		blockNumber = block.Number()
+		gp          = new(GasPool).AddGas(block.GasLimit())
+	)
+
+	// Mutate the block and state according to any hard-fork specs
+	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
+		misc.ApplyDAOHardFork(statedb)
+	}
+	// Handle upgrade build-in system contract code
+	lastBlock := p.bc.GetBlockByHash(block.ParentHash())
+	if lastBlock == nil {
+		return nil
+	}
+
+	systemcontracts.UpgradeBuildInSystemContract(p.config, blockNumber, lastBlock.Time(), block.Time(), statedb)
+
+	var (
+		context = NewEVMBlockContext(header, p.bc, nil)
+		vmenv   = vm.NewEVM(context, vm.TxContext{}, statedb, p.config, cfg)
+		signer  = types.MakeSigner(p.config, header.Number, header.Time)
+		txNum   = len(block.Transactions())
+	)
+	// Iterate over and process the individual transactions
+	posa, isPoSA := p.engine.(consensus.PoSA)
+
+	// initialise bloom processors
+	bloomProcessors := NewAsyncReceiptBloomGenerator(txNum)
+	statedb.MarkFullProcessed()
+
+	systemTxs := make([]*types.Transaction, 0, 2)
+	commonTxs := make([]*types.Transaction, 0, txNum)
+	var receipts = make([]*types.Receipt, 0)
+	var usedGas uint64 = 0
+
+	meth := MethSimulation{
+		block:           block,
+		header:          block.Header(),
+		blockHash:       block.Hash(),
+		blockNumber:     block.Number(),
+		gasPool:         gp,
+		evm:             vmenv,
+		signer:          signer,
+		posa:            posa,
+		isPoSA:          isPoSA,
+		bloomProcessors: bloomProcessors,
+		systemTxs:       systemTxs,
+		commonTxs:       commonTxs,
+		receipts:        receipts,
+		usedGas:         &usedGas,
+	}
+
+	return &meth
+}
+
+func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB, i int) (*state.StateDB, *types.Receipt, []*types.Log, uint64, *int, error) {
+	//wtf
+	block, header, blockHash, blockNumber, gp, vmenv, signer, posa, isPoSA, bloomProcessors, systemTxs, commonTxs, receipts, usedGas := meth.block, meth.header,
+		meth.blockHash, meth.blockNumber, meth.gasPool, meth.evm, meth.signer, meth.posa, meth.isPoSA, meth.bloomProcessors, meth.systemTxs, meth.commonTxs, meth.receipts, meth.usedGas
+
+	var nextTxIndex *int
+	if i == meth.block.Transactions().Len()-1 {
+		nextTxIndex = nil
+	} else {
+		*nextTxIndex = i + 1
+	}
+
+	tx := meth.block.Transactions()[i]
+	if isPoSA {
+		if isSystemTx, err := posa.IsSystemTransaction(tx, block.Header()); err != nil {
+			bloomProcessors.Close()
+			return statedb, nil, nil, 0, &i, err
+		} else if isSystemTx {
+			systemTxs = append(systemTxs, tx)
+			return statedb, nil, nil, 0, nextTxIndex, nil
+		}
+	}
+
+	msg, err := TransactionToMessage(tx, signer, header.BaseFee)
+	if err != nil {
+		bloomProcessors.Close()
+		return statedb, nil, nil, 0, &i, err
+	}
+	statedb.SetTxContext(tx.Hash(), i)
+
+	receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv, bloomProcessors)
+	if err != nil {
+		bloomProcessors.Close()
+		return statedb, nil, nil, 0, &i, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+	}
+
+	commonTxs = append(commonTxs, tx)
+	receipts = append(receipts, receipt)
+
+	return statedb, receipt, receipt.Logs, receipt.GasUsed, nextTxIndex, nil
+
+}
+
+func (p *StateProcessor) Commit(meth *MethSimulation, statedb *state.StateDB) (*state.StateDB, uint64, error) {
+	block, header, receipts, systemTxs, usedGas, commonTxs, bloomProcessors := meth.block, meth.header, meth.receipts, meth.systemTxs, meth.usedGas, meth.commonTxs, meth.bloomProcessors
+
+	bloomProcessors.Close()
+
+	// Fail if Shanghai not enabled and len(withdrawals) is non-zero.
+	withdrawals := block.Withdrawals()
+	if len(withdrawals) > 0 && !p.config.IsShanghai(block.Number(), block.Time()) {
+		errors.New("withdrawals before shanghai")
+	}
+
+	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
+	err := p.engine.Finalize(p.bc, header, statedb, &commonTxs, block.Uncles(), withdrawals, &receipts, &systemTxs, usedGas)
+	var allLogs []*types.Log
+	for _, receipt := range receipts {
+		allLogs = append(allLogs, receipt.Logs...)
+	}
+	if err != nil {
+		return statedb, *usedGas, err
+	}
+	for _, receipt := range receipts {
+		allLogs = append(allLogs, receipt.Logs...)
+	}
+	return statedb, *usedGas, nil
+}
+
 // Process processes the state changes according to the Ethereum rules by running
 // the transaction messages using the statedb and applying any rewards to both
 // the processor (coinbase) and any included uncles.
