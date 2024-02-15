@@ -247,11 +247,21 @@ func (l *StructLogger) GetResult() (json.RawMessage, error) {
 	if failed && l.err != vm.ErrExecutionReverted {
 		returnVal = ""
 	}
+	usedGas := l.usedGas
+	logs := formatLogs(l.StructLogs())
+
+	//reset the logger
+	l.storage = make(map[common.Address]Storage)
+	l.err = nil
+	l.output = make([]byte, 0)
+	l.usedGas = 0
+	l.logs = make([]StructLog, 0)
+
 	return json.Marshal(&ExecutionResult{
-		Gas:         l.usedGas,
+		Gas:         usedGas,
 		Failed:      failed,
 		ReturnValue: returnVal,
-		StructLogs:  formatLogs(l.StructLogs()),
+		StructLogs:  logs,
 	})
 }
 
