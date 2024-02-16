@@ -143,7 +143,7 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 			bloomProcessors.Close()
 			return statedb, nil, nil, 0, &i, err
 		} else if isSystemTx {
-			systemTxs = append(systemTxs, tx)
+			meth.systemTxs = append(systemTxs, tx)
 			return statedb, nil, nil, 0, nextTxIndex, nil
 		}
 	}
@@ -161,14 +161,14 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 		return statedb, nil, nil, 0, &i, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 	}
 
-	commonTxs = append(commonTxs, tx)
-	receipts = append(receipts, receipt)
+	meth.commonTxs = append(commonTxs, tx)
+	meth.receipts = append(receipts, receipt)
 
 	return statedb, receipt, receipt.Logs, receipt.GasUsed, nextTxIndex, nil
 
 }
 
-func (p *StateProcessor) Commit(meth *MethSimulation, statedb *state.StateDB) (*state.StateDB, uint64, error) {
+func (p *StateProcessor) Commit(meth *MethSimulation, statedb *state.StateDB) (*state.StateDB, []*types.Receipt, []*types.Log, uint64, error) {
 	block, header, receipts, systemTxs, usedGas, commonTxs, bloomProcessors := meth.block, meth.header, meth.receipts, meth.systemTxs, meth.usedGas, meth.commonTxs, meth.bloomProcessors
 
 	bloomProcessors.Close()
@@ -176,22 +176,22 @@ func (p *StateProcessor) Commit(meth *MethSimulation, statedb *state.StateDB) (*
 	// Fail if Shanghai not enabled and len(withdrawals) is non-zero.
 	withdrawals := block.Withdrawals()
 	if len(withdrawals) > 0 && !p.config.IsShanghai(block.Number(), block.Time()) {
-		errors.New("withdrawals before shanghai")
+		return statedb, nil, nil, 0, errors.New("withdrawals before shanghai")
 	}
 
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	err := p.engine.Finalize(p.bc, header, statedb, &commonTxs, block.Uncles(), withdrawals, &receipts, &systemTxs, usedGas)
+
 	var allLogs []*types.Log
 	for _, receipt := range receipts {
 		allLogs = append(allLogs, receipt.Logs...)
 	}
+
 	if err != nil {
-		return statedb, *usedGas, err
+		return statedb, nil, nil, *usedGas, err
 	}
-	for _, receipt := range receipts {
-		allLogs = append(allLogs, receipt.Logs...)
-	}
-	return statedb, *usedGas, nil
+
+	return statedb, receipts, allLogs, *usedGas, nil
 }
 
 // Process processes the state changes according to the Ethereum rules by running
