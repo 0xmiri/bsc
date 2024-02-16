@@ -130,10 +130,9 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 	block, header, blockHash, blockNumber, gp, vmenv, signer, posa, isPoSA, bloomProcessors, systemTxs, commonTxs, receipts, usedGas := meth.block, meth.header,
 		meth.blockHash, meth.blockNumber, meth.gasPool, meth.evm, meth.signer, meth.posa, meth.isPoSA, meth.bloomProcessors, meth.systemTxs, meth.commonTxs, meth.receipts, meth.usedGas
 
-	var nextTxIndex *int
+	var nextTxIndex = i
 	if i != meth.block.Transactions().Len()-1 {
-		next := i + 1
-		*nextTxIndex = next
+		nextTxIndex += 1
 	}
 
 	tx := meth.block.Transactions()[i]
@@ -143,7 +142,7 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 			return statedb, nil, nil, 0, &i, err
 		} else if isSystemTx {
 			meth.systemTxs = append(systemTxs, tx)
-			return statedb, nil, nil, 0, nextTxIndex, nil
+			return statedb, nil, nil, 0, &nextTxIndex, nil
 		}
 	}
 
@@ -163,7 +162,7 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 	meth.commonTxs = append(commonTxs, tx)
 	meth.receipts = append(receipts, receipt)
 
-	return statedb, receipt, receipt.Logs, receipt.GasUsed, nextTxIndex, nil
+	return statedb, receipt, receipt.Logs, receipt.GasUsed, &nextTxIndex, nil
 
 }
 
