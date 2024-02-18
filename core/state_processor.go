@@ -131,9 +131,12 @@ func (p *StateProcessor) ProcessTx(meth *MethSimulation, statedb *state.StateDB,
 		meth.blockHash, meth.blockNumber, meth.gasPool, meth.evm, meth.signer, meth.posa, meth.isPoSA, meth.bloomProcessors, meth.systemTxs, meth.commonTxs, meth.receipts, meth.usedGas
 
 	var nextTxIndex = i
-	if i != meth.block.Transactions().Len()-1 {
-		nextTxIndex += 1
+
+	if i == meth.block.Transactions().Len()-1 {
+		return nil, nil, nil, 0, nil, errors.New("end of block")
 	}
+
+	nextTxIndex += 1
 
 	tx := meth.block.Transactions()[i]
 	if isPoSA {
